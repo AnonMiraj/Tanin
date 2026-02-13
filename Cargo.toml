@@ -22,4 +22,4 @@ clap = { version = "4.5.58", features = ["derive"] }
 log = "0.4.29"
 simplelog = "0.12.2"
 magnum = { version = "1.0.1", features = ["rodio"] }
-ureq = { version = "2.9", features = ["native-tls"] }
+minreq = { version = "2.11", default-features = false, features = ["https-native"] }

@@ -143,19 +143,22 @@ impl App {
             log::debug!("Download target: {}", output_template_str);
 
             if !yt_dlp_available {
-                // Fallback to ureq
+                // Fallback to minreq
                 if let Some(target_file) = &target_filename {
                     // We trust the target filename provided (from sounds.toml)
                     let final_path = sounds_dir.join(target_file);
 
-                    match ureq::get(&url).call() {
+                    match minreq::get(&url).send_lazy() {
                         Ok(resp) => {
                             let total_size = resp
-                                .header("Content-Length")
-                                .and_then(|s| s.parse::<usize>().ok())
+                                .headers
+                                .iter()
+                                .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                                .and_then(|(_, v)| v.parse::<usize>().ok())
                                 .unwrap_or(0);
 
-                            let mut reader = resp.into_reader();
+                            let mut reader = resp;
+
                             let mut file = match std::fs::File::create(&final_path) {
                                 Ok(f) => f,
                                 Err(e) => {

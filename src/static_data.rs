@@ -273,9 +273,9 @@ pub fn download_config() -> Result<Vec<Sound>> {
 
     // Download sounds.toml
     let toml_url = format!("{}assets/sounds.toml", REPO_URL_BASE);
-    let toml_resp = ureq::get(&toml_url).call()?;
+    let toml_resp = minreq::get(&toml_url).send_lazy()?;
 
-    let mut reader = toml_resp.into_reader();
+    let mut reader = toml_resp;
     let toml_path = assets_dir.join("sounds.toml");
     let mut file = fs::File::create(&toml_path)?;
     std::io::copy(&mut reader, &mut file)?;
