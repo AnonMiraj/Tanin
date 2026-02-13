@@ -8,26 +8,31 @@ base_path = "assets/sounds/"
 file = "rain.ogg"
 volume = 0.5
 icon = "🌧️"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/rain.ogg"
 
 [Water.Thunderstorm]
 file = "storm.ogg"
 volume = 0.5
 icon = "⛈️"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/storm.ogg"
 
 [Water.Ocean_Waves]
 file = "waves.ogg"
 volume = 0.5
 icon = "🌊"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/waves.ogg"
 
 [Water.Flowing_Stream]
 file = "stream.ogg"
 volume = 0.5
 icon = "💧"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/stream.ogg"
 
 [Water.Boat_Ambiance]
 file = "boat.ogg"
 volume = 0.5
 icon = "⛵"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/boat.ogg"
 
 # ==========================================
 # Nature
@@ -36,16 +41,19 @@ icon = "⛵"
 file = "birds.ogg"
 volume = 0.5
 icon = "🐦"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/birds.ogg"
 
 [Nature.Night_Crickets]
 file = "summer-night.ogg"
 volume = 0.5
 icon = "🌙"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/summer-night.ogg"
 
 [Nature.Wind_Blowing]
 file = "wind.ogg"
 volume = 0.5
 icon = "💨"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/wind.ogg"
 
 # ==========================================
 # Urban
@@ -54,16 +62,19 @@ icon = "💨"
 file = "coffee-shop.ogg"
 volume = 0.5
 icon = "☕"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/coffee-shop.ogg"
 
 [Urban.City_Traffic]
 file = "city.ogg"
 volume = 0.5
 icon = "🏙️"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/city.ogg"
 
 [Urban.Train]
 file = "train.ogg"
 volume = 0.5
 icon = "🚂"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/train.ogg"
 
 # ==========================================
 # Warmth
@@ -72,6 +83,7 @@ icon = "🚂"
 file = "fireplace.ogg"
 volume = 0.5
 icon = "🔥"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/fireplace.ogg"
 
 # ==========================================
 # Ambient Noise
@@ -80,9 +92,10 @@ icon = "🔥"
 file = "white-noise.ogg"
 volume = 0.5
 icon = "📻"
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/white-noise.ogg"
 
 ["Ambient Noise".Pink_noise]
 file = "pink-noise.ogg"
 volume = 0.5
 icon = "🎵"
-
+url = "https://github.com/AnonMiraj/Tanin/raw/refs/heads/main/assets/sounds/pink-noise.ogg"

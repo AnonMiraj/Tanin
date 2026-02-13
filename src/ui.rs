@@ -1,3 +1,4 @@
+pub mod assets;
 pub mod download;
 pub mod footer;
 pub mod header;
@@ -45,6 +46,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             main_view::render_grid(f, app, chunks[1]);
             help::render_help(f, size);
         }
+        CurrentView::AssetMissing => assets::render_asset_prompt(f, app, chunks[1]),
+        CurrentView::DownloadingAssets => assets::render_asset_download(f, app, chunks[1]),
     }
 
     footer::render_footer(f, app, chunks[2]);

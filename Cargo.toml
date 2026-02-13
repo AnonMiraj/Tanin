@@ -1,11 +1,14 @@
 [package]
 name = "tanin"
 version = "0.1.0"
+authors = ["AnonMiraj"]
 edition = "2021"
 description = "A TUI ambient sound generator written in Rust."
 license = "MIT"
 keywords = ["tui", "audio", "ambient", "noise"]
 categories = ["multimedia::audio", "command-line-utilities"]
+repository = "https://github.com/AnonMiraj/Tanin"
+exclude = ["assets/**/*"]
 
 [dependencies]
 ratatui = "0.29.0"
@@ -19,3 +22,4 @@ clap = { version = "4.5.58", features = ["derive"] }
 log = "0.4.29"
 simplelog = "0.12.2"
 magnum = { version = "1.0.1", features = ["rodio"] }
+ureq = { version = "2.9", features = ["native-tls"] }

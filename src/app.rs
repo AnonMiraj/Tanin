@@ -8,10 +8,15 @@ use crate::audio::AudioEngine;
 use crate::config::Config;
 use crate::presets::PresetsConfig;
 use crate::session::{Session, SoundState};
-use crate::static_data::{get_bundled_sounds, Sound};
+use crate::static_data::{check_assets, get_bundled_sounds, AssetStatus, Sound};
 use anyhow::Result;
 pub use download::{DownloadEvent, DownloadStatus, DownloadTask};
 use std::sync::mpsc::Receiver;
+
+pub enum AssetDownloadEvent {
+    ConfigDownloaded(Vec<Sound>),
+    Error(String),
+}
 
 #[derive(PartialEq)]
 pub enum CurrentView {
@@ -19,6 +24,8 @@ pub enum CurrentView {
     Presets,
     Help,
     Downloads,
+    AssetMissing,
+    DownloadingAssets,
 }
 
 pub struct App {
@@ -63,6 +70,10 @@ pub struct App {
     pub download_queue: Vec<DownloadTask>,
     pub active_download_index: Option<usize>,
     pub download_rx: Option<Receiver<DownloadEvent>>,
+
+    // Asset Download
+    pub asset_download_rx: Option<Receiver<AssetDownloadEvent>>,
+    pub asset_download_error: Option<String>,
 }
 
 impl App {
@@ -118,11 +129,17 @@ impl App {
             download_queue: Vec::new(),
             active_download_index: None,
             download_rx: None,
+
+            asset_download_rx: None,
+            asset_download_error: None,
         };
 
-        if config.general.enable_bundled_sounds {
+        if check_assets() == AssetStatus::Missing {
+            app.view = CurrentView::AssetMissing;
+        } else if config.general.enable_bundled_sounds {
             app.sounds.extend(get_bundled_sounds());
         }
+
         app.sounds.extend(crate::static_data::load_custom_sounds());
 
         // Sort all sounds to ensure categories are grouped correctly (merging bundled + custom)
@@ -152,7 +169,77 @@ impl App {
         Ok(app)
     }
 
+    pub fn start_asset_download(&mut self) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.asset_download_rx = Some(rx);
+        self.view = CurrentView::DownloadingAssets;
+        self.asset_download_error = None;
+
+        std::thread::spawn(move || match crate::static_data::download_config() {
+            Ok(sounds) => {
+                let _ = tx.send(AssetDownloadEvent::ConfigDownloaded(sounds));
+            }
+            Err(e) => {
+                let _ = tx.send(AssetDownloadEvent::Error(e.to_string()));
+            }
+        });
+    }
+
     pub fn update(&mut self, dt: std::time::Duration) {
+        if let Some(rx) = &self.asset_download_rx {
+            loop {
+                match rx.try_recv() {
+                    Ok(AssetDownloadEvent::ConfigDownloaded(sounds)) => {
+                        self.asset_download_rx = None;
+
+                        // Populate queue
+                        for sound in sounds {
+                            if !std::path::Path::new(&sound.file_path).exists() {
+                                if let Some(url) = &sound.url {
+                                    self.download_queue.push(DownloadTask {
+                                        name: sound.name.clone(),
+                                        category: sound.category.clone(),
+                                        url: url.clone(),
+                                        status: DownloadStatus::Pending,
+                                        icon: sound.icon.clone(),
+                                        target_filename: std::path::Path::new(&sound.file_path)
+                                            .file_name()
+                                            .map(|s| s.to_string_lossy().to_string()),
+                                    });
+                                }
+                            }
+                        }
+
+                        // Reload sounds to pick up the new config
+                        if self.config.general.enable_bundled_sounds {
+                            self.sounds = get_bundled_sounds();
+                        }
+                        self.sounds.extend(crate::static_data::load_custom_sounds());
+                        self.sort_sounds();
+
+                        // Switch to Downloads view
+                        self.view = CurrentView::Downloads;
+                        // Force yt_dlp available check just in case, though we checked at start
+                        // If it's false, the user will see an empty download list or we should warn them.
+                        // But we assume they have it if they chose to download.
+
+                        break;
+                    }
+                    Ok(AssetDownloadEvent::Error(e)) => {
+                        self.asset_download_rx = None;
+                        self.asset_download_error = Some(e);
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.asset_download_rx = None;
+                        self.asset_download_error = Some("Thread disconnected".to_string());
+                        break;
+                    }
+                }
+            }
+        }
+
         if let Some(engine) = &mut self.audio_engine {
             engine.update(dt);
         }

@@ -52,6 +52,7 @@ pub fn render_header(f: &mut Frame, app: &App, area: Rect) {
             CurrentView::Main | CurrentView::Help => 0,
             CurrentView::Presets => 1,
             CurrentView::Downloads => 2,
+            CurrentView::AssetMissing | CurrentView::DownloadingAssets => 0,
         };
 
         let tabs = Tabs::new(titles)

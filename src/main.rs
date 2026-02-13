@@ -245,6 +245,21 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                     CurrentView::Main => handle_main_keys(app, key.code),
                                     CurrentView::Presets => handle_presets_keys(app, key.code),
                                     CurrentView::Downloads => handle_add_sound_keys(app, key),
+                                    CurrentView::AssetMissing => match key.code {
+                                        KeyCode::Enter => app.start_asset_download(),
+                                        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+                                            app.view = CurrentView::Main
+                                        }
+                                        _ => {}
+                                    },
+                                    CurrentView::DownloadingAssets => {
+                                        if app.asset_download_error.is_some()
+                                            && key.code == KeyCode::Esc
+                                        {
+                                            app.view = CurrentView::Main;
+                                            app.asset_download_error = None;
+                                        }
+                                    }
                                     _ => {}
                                 },
                             }
