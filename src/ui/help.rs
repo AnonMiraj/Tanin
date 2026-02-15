@@ -28,6 +28,7 @@ pub fn render_help(f: &mut Frame, area: Rect) {
             Style::default().fg(Color::Green),
         )),
         Line::from("  Enter / Space   Toggle sound"),
+        Line::from("  < / >           Master Volume"),
         Line::from("  + / -           Volume"),
         Line::from("  s               Stop all"),
         Line::from(""),
