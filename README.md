@@ -9,26 +9,40 @@ Inspired by [Blanket](https://github.com/rafaelmardojai/blanket).
 *   **TUI Interface**: Fast, keyboard-centric interface built with Ratatui (mouse is also supported (: ).
 *   **Audio Mixing**: Play multiple sounds simultaneously with individual volume controls.
 *   **Custom Sounds**: Built-in support for downloading sounds from YouTube and other sources via `yt-dlp`.
-*   **Presets**: Save and load your perfect soundscapes.
+*   **Presets**
 
 ## Installation
 
-### Requirements
-*   **Optional**: [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) (for downloading custom sounds)
+### From Package Managers
 
-### Build & Run
+**Cargo:**
+```bash
+cargo install tanin
+```
+
+**Arch Linux (AUR):**
+```bash
+yay -S tanin
+# or using paru
+paru -S tanin
+```
+
+### Build from Source
 ```bash
 git clone https://github.com/AnonMiraj/Tanin.git
 cd Tanin
 cargo run --release
 ```
 
+### Requirements
+*   **Optional**: [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) (for downloading custom sounds)
+
 ## Configuration & Custom Sounds
 
 Tanin stores configuration in your system's standard config directory (e.g., `~/.config/tanin/` on Linux).
 
 ### Adding Sounds Manually
-You can add custom sounds by editing `sounds.toml` in your configuration directory. Use the format `[Category.Sound_NAME]` to group sounds.
+You can add custom sounds by editing `sounds.toml` in your configuration directory. Use the format `[Category.Sound_NAME]` to group sounds. Tanin will automatically download sounds if a url is provided.
 
 **Example:**
 ```toml
