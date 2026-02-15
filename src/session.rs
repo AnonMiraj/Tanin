@@ -53,7 +53,7 @@ impl Session {
 
 fn get_session_path() -> Result<PathBuf> {
     if let Some(proj_dirs) = ProjectDirs::from("com", "tanin", "tanin") {
-        Ok(proj_dirs.config_dir().join("session.toml"))
+        Ok(proj_dirs.cache_dir().join("session.toml"))
     } else {
         Ok(PathBuf::from("session.toml"))
     }
