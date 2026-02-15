@@ -22,6 +22,7 @@ pub fn render_help(f: &mut Frame, area: Rect) {
         Line::from("  Tab             Switch Views"),
         Line::from("  /               Search Sounds"),
         Line::from("  h j k l         Navigate Grid / List"),
+        Line::from("  a               Download Custom Sounds (require yt-dlp) "),
         Line::from(""),
         Line::from(Span::styled(
             "Sounds View",
