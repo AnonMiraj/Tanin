@@ -19,6 +19,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use simplelog::{Config, WriteLogger};
 use std::fs::File;
 use std::io;
+use std::os::unix::io::AsRawFd;
 use std::time::Duration;
 
 use std::panic;
@@ -35,12 +36,25 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     if args.debug {
-        let _ = WriteLogger::init(
-            LevelFilter::Debug,
-            Config::default(),
-            File::create("tanin.log")?,
-        );
+        let log_file = File::create("tanin.log")?;
+        let log_fd = log_file.as_raw_fd();
+
+        unsafe {
+            libc::dup2(log_fd, libc::STDERR_FILENO);
+        }
+
+        let log_file_clone = log_file.try_clone()?;
+
+        let _ = WriteLogger::init(LevelFilter::Debug, Config::default(), log_file_clone);
         log::info!("Starting Tanin in debug mode");
+    } else {
+        // Redirect stderr to /dev/null to suppress errors in TUI
+        if let Ok(dev_null) = File::open("/dev/null") {
+            let null_fd = dev_null.as_raw_fd();
+            unsafe {
+                libc::dup2(null_fd, libc::STDERR_FILENO);
+            }
+        }
     }
 
     // Register panic hook to restore terminal and log panic

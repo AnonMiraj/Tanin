@@ -1,4 +1,6 @@
 use anyhow::{Context, Result};
+use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::HostId;
 use magnum::container::ogg::OpusSourceOgg;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use std::collections::HashMap;
@@ -53,8 +55,70 @@ pub struct AudioEngine {
 
 impl AudioEngine {
     pub fn new() -> Result<Self> {
-        let (_stream, stream_handle) =
-            OutputStream::try_default().context("No audio output device available")?;
+        let available_hosts = cpal::available_hosts();
+        log::info!("Available audio hosts: {:?}", available_hosts);
+
+        let mut device = None;
+        let mut host_name = "Default";
+
+        let mut priority_hosts = Vec::new();
+
+        #[cfg(all(
+            any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd"),
+            feature = "jack"
+        ))]
+        priority_hosts.push(HostId::Jack);
+
+        #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd"))]
+        priority_hosts.push(HostId::Alsa);
+
+        for &host_id in &priority_hosts {
+            if available_hosts.contains(&host_id) {
+                log::debug!("Attempting to use audio host: {:?}", host_id);
+                if let Ok(host) = cpal::host_from_id(host_id) {
+                    if let Some(d) = host.default_output_device() {
+                        log::info!(
+                            "Selected audio device from host {:?}: {}",
+                            host_id,
+                            d.name().unwrap_or_else(|_| "Unknown".to_string())
+                        );
+                        device = Some(d);
+                        host_name = match host_id {
+                            #[cfg(all(
+                                any(
+                                    target_os = "linux",
+                                    target_os = "dragonfly",
+                                    target_os = "freebsd"
+                                ),
+                                feature = "jack"
+                            ))]
+                            HostId::Jack => "JACK",
+                            #[cfg(any(
+                                target_os = "linux",
+                                target_os = "dragonfly",
+                                target_os = "freebsd"
+                            ))]
+                            HostId::Alsa => "ALSA",
+                            #[allow(unreachable_patterns)]
+                            _ => "Unknown",
+                        };
+
+                        break;
+                    }
+                }
+            }
+        }
+
+        let (_stream, stream_handle) = if let Some(d) = device {
+            OutputStream::try_from_device(&d)
+                .map_err(|e| anyhow::anyhow!("Failed to create output stream from device: {}", e))?
+        } else {
+            log::warn!("No preferred audio host found. Falling back to default.");
+            OutputStream::try_default().context("No audio output device available")?
+        };
+
+        log::info!("Audio engine initialized successfully using {}", host_name);
+
         Ok(Self {
             _stream,
             stream_handle,
