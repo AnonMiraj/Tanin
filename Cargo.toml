@@ -10,6 +10,10 @@ categories = ["multimedia::audio", "command-line-utilities"]
 repository = "https://github.com/AnonMiraj/Tanin"
 exclude = ["assets/**/*"]
 
+[features]
+default = ["jack"]
+jack = ["cpal/jack"]
+
 [dependencies]
 ratatui = "0.29.0"
 crossterm = "0.28.1"
@@ -23,3 +27,5 @@ log = "0.4.29"
 simplelog = "0.12.2"
 magnum = { version = "1.0.1", features = ["rodio"] }
 minreq = { version = "2.11", default-features = false, features = ["https-native"] }
+cpal = "0.15.3"
+libc = "0.2.182"
