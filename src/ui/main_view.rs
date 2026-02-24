@@ -101,8 +101,12 @@ fn render_card(f: &mut Frame, app: &App, idx: usize, sound: &Sound, area: Rect) 
         false
     };
 
-    let border_style = if selected {
-        Style::default().fg(Color::Blue)
+    let border_style = if playing {
+        if selected {
+            Style::default().fg(Color::Blue)
+        } else {
+            Style::default().fg(Color::White)
+        }
     } else {
         Style::default().fg(Color::DarkGray)
     };
@@ -128,7 +132,7 @@ fn render_card(f: &mut Frame, app: &App, idx: usize, sound: &Sound, area: Rect) 
         if selected {
             Color::Green
         } else {
-            Color::Reset
+            Color::Black
         }
     } else if selected {
         Color::Reset
@@ -207,3 +211,4 @@ fn render_card(f: &mut Frame, app: &App, idx: usize, sound: &Sound, area: Rect) 
 
     f.render_widget(p, area);
 }
+
