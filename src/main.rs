@@ -17,10 +17,9 @@ use crossterm::{
 use log::LevelFilter;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use simplelog::{Config, WriteLogger};
-use std::fs::File;
 use std::io;
-use std::os::unix::io::AsRawFd;
 use std::time::Duration;
+use std::{fs::File, os::fd::AsFd};
 
 use std::panic;
 
@@ -37,11 +36,9 @@ fn main() -> Result<()> {
 
     if args.debug {
         let log_file = File::create("tanin.log")?;
-        let log_fd = log_file.as_raw_fd();
 
-        unsafe {
-            libc::dup2(log_fd, libc::STDERR_FILENO);
-        }
+        nix::unistd::dup2_stderr(log_file.as_fd())
+            .map_err(|e| anyhow::anyhow!("Failed to redirect stderr: {}", e))?;
 
         let log_file_clone = log_file.try_clone()?;
 
@@ -50,10 +47,8 @@ fn main() -> Result<()> {
     } else {
         // Redirect stderr to /dev/null to suppress errors in TUI
         if let Ok(dev_null) = File::open("/dev/null") {
-            let null_fd = dev_null.as_raw_fd();
-            unsafe {
-                libc::dup2(null_fd, libc::STDERR_FILENO);
-            }
+            nix::unistd::dup2_stderr(dev_null.as_fd())
+                .map_err(|e| anyhow::anyhow!("Failed to redirect stderr: {}", e))?;
         }
     }
 
