@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::time::Duration;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::thread;
 
 struct FadingSink {
     id: String,
@@ -43,8 +45,13 @@ impl<R: std::io::Read + std::io::Seek> Source for MagnumOggWrapper<R> {
     }
 }
 
+// Internal payload for the I/O worker thread
+struct PreloadTask {
+    file_path: String,
+    reply_tx: Sender<Box<dyn Source<Item = f32> + Send>>,
+}
+
 // Helper to spin up the correct decoder based on extension.
-// Extracted from play() to decouple formatting and flatten nesting.
 fn create_decoder_from_path(file_path: &str) -> anyhow::Result<Box<dyn Source<Item = f32> + Send>> {
     log::debug!("Creating decoder for: {}", file_path);
 
@@ -65,7 +72,6 @@ fn create_decoder_from_path(file_path: &str) -> anyhow::Result<Box<dyn Source<It
         log::warn!("Magnum decoder failed, falling back to Rodio.");
     }
 
-    // Catch potential rodio panics to isolate crashes from the main TUI thread
     let decoder_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         Decoder::new(BufReader::new(file))
     }));
@@ -77,41 +83,69 @@ fn create_decoder_from_path(file_path: &str) -> anyhow::Result<Box<dyn Source<It
     }
 }
 
-// Stream chunks from disk and preload the next decoder cycle ahead of time
-// to avoid boundary glitches without caching the whole PCM into RAM.
+// Stream chunks from disk and async preload the next cycle
+// to achieve gapless looping without RAM bloating.
 struct GaplessLoopingSource {
     file_path: String,
     current_decoder: Box<dyn Source<Item = f32> + Send>,
-    next_decoder: Option<Box<dyn Source<Item = f32> + Send>>, // hot standby
+    next_decoder_rx: Option<Receiver<Box<dyn Source<Item = f32> + Send>>>,
+    io_worker_tx: Sender<PreloadTask>,
+}
+
+impl GaplessLoopingSource {
+    pub fn new(
+        file_path: String,
+        initial_decoder: Box<dyn Source<Item = f32> + Send>,
+        io_worker_tx: Sender<PreloadTask>
+    ) -> Self {
+        let mut source = Self {
+            file_path,
+            current_decoder: initial_decoder,
+            next_decoder_rx: None,
+            io_worker_tx,
+        };
+        source.trigger_preload();
+        source
+    }
+
+    fn trigger_preload(&mut self) {
+        let (tx, rx) = channel();
+        let task = PreloadTask {
+            file_path: self.file_path.clone(),
+            reply_tx: tx,
+        };
+
+        // Fire and forget.
+        let _ = self.io_worker_tx.send(task);
+        self.next_decoder_rx = Some(rx);
+    }
 }
 
 impl Iterator for GaplessLoopingSource {
     type Item = f32;
 
+    #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(sample) = self.current_decoder.next() {
-            // Trigger preloading lazily when vacant
-            if self.next_decoder.is_none() {
-                if let Ok(pre_loaded) = create_decoder_from_path(&self.file_path) {
-                    self.next_decoder = Some(pre_loaded);
-                }
-            }
             Some(sample)
         } else {
-            // Un seamless switch to the preloaded standby decoder
-            if let Some(mut ready_decoder) = self.next_decoder.take() {
-                let first_sample = ready_decoder.next();
-                self.current_decoder = ready_decoder;
-                first_sample
-            } else {
-                // Blocking fallback if preloading haven't finished yet
-                if let Ok(fallback) = create_decoder_from_path(&self.file_path) {
-                    self.current_decoder = fallback;
-                    self.current_decoder.next()
-                } else {
-                    None
+            // Drain the channel for the hot standby.
+            // Blocks here if I/O worker is lagging behind, acting as a graceful fallback.
+            if let Some(rx) = self.next_decoder_rx.take() {
+                match rx.recv() {
+                    Ok(mut ready_decoder) => {
+                        let first_sample = ready_decoder.next();
+                        self.current_decoder = ready_decoder;
+                        self.trigger_preload(); 
+                        return first_sample;
+                    }
+                    Err(_) => {
+                        log::error!("I/O worker disconnected while preloading '{}'. Stopping stream.", self.file_path);
+                    }
                 }
             }
+            // Let the stream die naturally if I/O worker panicked or channel dropped
+            None
         }
     }
 }
@@ -131,6 +165,7 @@ pub struct AudioEngine {
     master_volume: f32,
     sound_volumes: HashMap<String, f32>,
     fade_duration: Duration,
+    io_worker_tx: Sender<PreloadTask>,
 }
 
 impl AudioEngine {
@@ -197,6 +232,19 @@ impl AudioEngine {
             OutputStream::try_default().context("No audio output device available")?
         };
 
+        // Spawn a dedicated, long-lived worker for decoder initialization
+        // to keep audio threads free from blocking I/O calls.
+        let (task_tx, task_rx) = channel::<PreloadTask>();
+        thread::spawn(move || {
+            while let Ok(task) = task_rx.recv() {
+                if let Ok(decoder) = create_decoder_from_path(&task.file_path) {
+                    // Send back to the specific source instance.
+                    // Ignore errors if the sound was stopped by user in the meantime.
+                    let _ = task.reply_tx.send(decoder);
+                }
+            }
+        });
+
         log::info!("Audio engine initialized successfully using {}", host_name);
 
         Ok(Self {
@@ -207,6 +255,7 @@ impl AudioEngine {
             master_volume: 1.0,
             sound_volumes: HashMap::new(),
             fade_duration: Duration::from_secs(2),
+            io_worker_tx: task_tx, // Store the dispatcher
         })
     }
 
@@ -246,11 +295,11 @@ impl AudioEngine {
         }
 
         let initial_decoder = create_decoder_from_path(file_path)?;
-        let looping_source = GaplessLoopingSource {
-            file_path: file_path.to_string(),
-            current_decoder: initial_decoder,
-            next_decoder: None,
-        };
+        let looping_source = GaplessLoopingSource::new(
+            file_path.to_string(),
+            initial_decoder,
+            self.io_worker_tx.clone() // Hand over a copy of the dispatcher
+        );
         let final_source = looping_source.fade_in(self.fade_duration);
 
         log::debug!("Creating sink for: {}", id);
