@@ -43,6 +43,86 @@ impl<R: std::io::Read + std::io::Seek> Source for MagnumOggWrapper<R> {
     }
 }
 
+// Helper to spin up the correct decoder based on extension.
+// Extracted from play() to decouple formatting and flatten nesting.
+fn create_decoder_from_path(file_path: &str) -> anyhow::Result<Box<dyn Source<Item = f32> + Send>> {
+    log::debug!("Creating decoder for: {}", file_path);
+
+    let file = File::open(file_path)
+        .context(format!("Failed to open sound file: {}", file_path))?;
+
+    let is_opus = file_path.to_lowercase().ends_with(".opus")
+        || file_path.to_lowercase().ends_with(".webm");
+
+    if is_opus {
+        log::info!("Attempting to use Magnum (Opus) decoder for: {}", file_path);
+        let file_for_opus = file.try_clone().context("Failed to clone file handle for Opus")?;
+
+        if let Ok(decoder) = OpusSourceOgg::new(BufReader::new(file_for_opus)) {
+            log::info!("Magnum decoder created successfully.");
+            return Ok(Box::new(MagnumOggWrapper(decoder)));
+        }
+        log::warn!("Magnum decoder failed, falling back to Rodio.");
+    }
+
+    // Catch potential rodio panics to isolate crashes from the main TUI thread
+    let decoder_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        Decoder::new(BufReader::new(file))
+    }));
+
+    match decoder_result {
+        Ok(Ok(d)) => Ok(Box::new(d.convert_samples())),
+        Ok(Err(e)) => Err(anyhow::anyhow!("Rodio decoder error: {}", e)),
+        Err(_) => Err(anyhow::anyhow!("Rodio decoder panicked.")),
+    }
+}
+
+// Stream chunks from disk and preload the next decoder cycle ahead of time
+// to avoid boundary glitches without caching the whole PCM into RAM.
+struct GaplessLoopingSource {
+    file_path: String,
+    current_decoder: Box<dyn Source<Item = f32> + Send>,
+    next_decoder: Option<Box<dyn Source<Item = f32> + Send>>, // hot standby
+}
+
+impl Iterator for GaplessLoopingSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(sample) = self.current_decoder.next() {
+            // Trigger preloading lazily when vacant
+            if self.next_decoder.is_none() {
+                if let Ok(pre_loaded) = create_decoder_from_path(&self.file_path) {
+                    self.next_decoder = Some(pre_loaded);
+                }
+            }
+            Some(sample)
+        } else {
+            // Un seamless switch to the preloaded standby decoder
+            if let Some(mut ready_decoder) = self.next_decoder.take() {
+                let first_sample = ready_decoder.next();
+                self.current_decoder = ready_decoder;
+                first_sample
+            } else {
+                // Blocking fallback if preloading haven't finished yet
+                if let Ok(fallback) = create_decoder_from_path(&self.file_path) {
+                    self.current_decoder = fallback;
+                    self.current_decoder.next()
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+impl Source for GaplessLoopingSource {
+    fn current_frame_len(&self) -> Option<usize> { self.current_decoder.current_frame_len() }
+    fn channels(&self) -> u16 { self.current_decoder.channels() }
+    fn sample_rate(&self) -> u32 { self.current_decoder.sample_rate() }
+    fn total_duration(&self) -> Option<Duration> { None } // Infinite loop
+}
+
 pub struct AudioEngine {
     _stream: OutputStream,
     stream_handle: OutputStreamHandle,
@@ -165,67 +245,18 @@ impl AudioEngine {
             fading.sink.stop();
         }
 
-        log::debug!("Opening file: {}", file_path);
-        let file =
-            File::open(file_path).context(format!("Failed to open sound file: {}", file_path))?;
-
-        log::debug!("Creating decoder for: {}", file_path);
-
-        let file_for_closure = file.try_clone().context("Failed to clone file handle")?;
-
-        let is_opus = file_path.to_lowercase().ends_with(".opus")
-            || file_path.to_lowercase().ends_with(".webm");
-
-        let source: Box<dyn Source<Item = f32> + Send> = if is_opus {
-            log::info!("Attempting to use Magnum (Opus) decoder for: {}", file_path);
-            match OpusSourceOgg::new(BufReader::new(file_for_closure)) {
-                Ok(decoder) => {
-                    log::info!("Magnum decoder created successfully.");
-                    Box::new(MagnumOggWrapper(decoder))
-                }
-                Err(e) => {
-                    log::error!("Magnum decoder failed: {:?}. Falling back to Rodio.", e);
-                    let file_fallback = file
-                        .try_clone()
-                        .context("Failed to clone file for fallback")?;
-                    let decoder_result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                            Decoder::new(BufReader::new(file_fallback))
-                        }));
-                    match decoder_result {
-                        Ok(Ok(d)) => Box::new(d.convert_samples()),
-                        Ok(Err(e)) => return Err(anyhow::anyhow!("Rodio decoder error: {}", e)),
-                        Err(_) => return Err(anyhow::anyhow!("Rodio decoder panicked.")),
-                    }
-                }
-            }
-        } else {
-            let decoder_result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                    Decoder::new(BufReader::new(file_for_closure))
-                }));
-
-            match decoder_result {
-                Ok(result) => match result {
-                    Ok(d) => Box::new(d.convert_samples()),
-                    Err(e) => {
-                        log::error!("Failed to create decoder for '{}': {}", file_path, e);
-                        return Err(anyhow::anyhow!("Decoder error: {}", e));
-                    }
-                },
-                Err(_) => {
-                    log::error!("Decoder PANICKED for '{}'.", file_path);
-                    return Err(anyhow::anyhow!("Decoder panicked."));
-                }
-            }
+        let initial_decoder = create_decoder_from_path(file_path)?;
+        let looping_source = GaplessLoopingSource {
+            file_path: file_path.to_string(),
+            current_decoder: initial_decoder,
+            next_decoder: None,
         };
-
-        let source = source.repeat_infinite().fade_in(self.fade_duration);
+        let final_source = looping_source.fade_in(self.fade_duration);
 
         log::debug!("Creating sink for: {}", id);
 
         let sink = Sink::try_new(&self.stream_handle)?;
-        sink.append(source);
+        sink.append(final_source);
 
         self.sound_volumes.insert(id.to_string(), volume);
         let effective_vol = volume * self.master_volume;
