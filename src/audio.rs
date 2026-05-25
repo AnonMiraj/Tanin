@@ -176,18 +176,17 @@ impl AudioEngine {
         let mut device = None;
         let mut host_name = "Default";
 
-        let mut priority_hosts = Vec::new();
-
-        #[cfg(all(
-            any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd"),
-            feature = "jack"
-        ))]
-        priority_hosts.push(HostId::Jack);
+        #[allow(unused_mut)]
+        let mut priority_hosts: Vec<(HostId, &'static str)> = Vec::new();
 
         #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd"))]
-        priority_hosts.push(HostId::Alsa);
+        {
+            #[cfg(feature = "jack")]
+            priority_hosts.push((HostId::Jack, "JACK"));
+            priority_hosts.push((HostId::Alsa, "ALSA"));
+        }
 
-        for &host_id in &priority_hosts {
+        for &(host_id, name_str) in &priority_hosts {
             if available_hosts.contains(&host_id) {
                 log::debug!("Attempting to use audio host: {:?}", host_id);
                 if let Ok(host) = cpal::host_from_id(host_id) {
@@ -198,26 +197,7 @@ impl AudioEngine {
                             d.name().unwrap_or_else(|_| "Unknown".to_string())
                         );
                         device = Some(d);
-                        host_name = match host_id {
-                            #[cfg(all(
-                                any(
-                                    target_os = "linux",
-                                    target_os = "dragonfly",
-                                    target_os = "freebsd"
-                                ),
-                                feature = "jack"
-                            ))]
-                            HostId::Jack => "JACK",
-                            #[cfg(any(
-                                target_os = "linux",
-                                target_os = "dragonfly",
-                                target_os = "freebsd"
-                            ))]
-                            HostId::Alsa => "ALSA",
-                            #[allow(unreachable_patterns)]
-                            _ => "Unknown",
-                        };
-
+                        host_name = name_str;
                         break;
                     }
                 }
