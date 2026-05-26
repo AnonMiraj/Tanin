@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::time::Duration;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::thread;
+use std::sync::mpsc::Sender;
+use crate::buffered::{self, DecodeTask};
 
 struct FadingSink {
     id: String,
@@ -19,42 +19,20 @@ struct FadingSink {
 }
 
 struct MagnumOggWrapper<R: std::io::Read + std::io::Seek>(OpusSourceOgg<R>);
-
 impl<R: std::io::Read + std::io::Seek> Iterator for MagnumOggWrapper<R> {
     type Item = f32;
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next()
     }
 }
-
 impl<R: std::io::Read + std::io::Seek> Source for MagnumOggWrapper<R> {
-    fn current_frame_len(&self) -> Option<usize> {
-        None
-    }
-
-    fn channels(&self) -> u16 {
-        2
-    }
-
-    fn sample_rate(&self) -> u32 {
-        48000
-    }
-
-    fn total_duration(&self) -> Option<Duration> {
-        None
-    }
+    fn current_frame_len(&self) -> Option<usize> { None }
+    fn channels(&self) -> u16 { 2 }
+    fn sample_rate(&self) -> u32 { 48000 }
+    fn total_duration(&self) -> Option<Duration> { None }
 }
 
-// Internal payload for the I/O worker thread
-struct PreloadTask {
-    file_path: String,
-    reply_tx: Sender<Box<dyn Source<Item = f32> + Send>>,
-}
-
-// Helper to spin up the correct decoder based on extension.
-fn create_decoder_from_path(file_path: &str) -> anyhow::Result<Box<dyn Source<Item = f32> + Send>> {
-    log::debug!("Creating decoder for: {}", file_path);
-
+fn create_decoder_from_path(file_path: &str) -> Result<Box<dyn Source<Item = f32> + Send>> {
     let file = File::open(file_path)
         .context(format!("Failed to open sound file: {}", file_path))?;
 
@@ -62,99 +40,14 @@ fn create_decoder_from_path(file_path: &str) -> anyhow::Result<Box<dyn Source<It
         || file_path.to_lowercase().ends_with(".webm");
 
     if is_opus {
-        log::info!("Attempting to use Magnum (Opus) decoder for: {}", file_path);
         let file_for_opus = file.try_clone().context("Failed to clone file handle for Opus")?;
-
         if let Ok(decoder) = OpusSourceOgg::new(BufReader::new(file_for_opus)) {
-            log::info!("Magnum decoder created successfully.");
             return Ok(Box::new(MagnumOggWrapper(decoder)));
         }
-        log::warn!("Magnum decoder failed, falling back to Rodio.");
     }
 
-    let decoder_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        Decoder::new(BufReader::new(file))
-    }));
-
-    match decoder_result {
-        Ok(Ok(d)) => Ok(Box::new(d.convert_samples())),
-        Ok(Err(e)) => Err(anyhow::anyhow!("Rodio decoder error: {}", e)),
-        Err(_) => Err(anyhow::anyhow!("Rodio decoder panicked.")),
-    }
-}
-
-// Stream chunks from disk and async preload the next cycle
-// to achieve gapless looping without RAM bloating.
-struct GaplessLoopingSource {
-    file_path: String,
-    current_decoder: Box<dyn Source<Item = f32> + Send>,
-    next_decoder_rx: Option<Receiver<Box<dyn Source<Item = f32> + Send>>>,
-    io_worker_tx: Sender<PreloadTask>,
-}
-
-impl GaplessLoopingSource {
-    pub fn new(
-        file_path: String,
-        initial_decoder: Box<dyn Source<Item = f32> + Send>,
-        io_worker_tx: Sender<PreloadTask>
-    ) -> Self {
-        let mut source = Self {
-            file_path,
-            current_decoder: initial_decoder,
-            next_decoder_rx: None,
-            io_worker_tx,
-        };
-        source.trigger_preload();
-        source
-    }
-
-    fn trigger_preload(&mut self) {
-        let (tx, rx) = channel();
-        let task = PreloadTask {
-            file_path: self.file_path.clone(),
-            reply_tx: tx,
-        };
-
-        // Fire and forget.
-        let _ = self.io_worker_tx.send(task);
-        self.next_decoder_rx = Some(rx);
-    }
-}
-
-impl Iterator for GaplessLoopingSource {
-    type Item = f32;
-
-    #[inline(always)]
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(sample) = self.current_decoder.next() {
-            Some(sample)
-        } else {
-            // Drain the channel for the hot standby.
-            // Blocks here if I/O worker is lagging behind, acting as a graceful fallback.
-            if let Some(rx) = self.next_decoder_rx.take() {
-                match rx.recv() {
-                    Ok(mut ready_decoder) => {
-                        let first_sample = ready_decoder.next();
-                        self.current_decoder = ready_decoder;
-                        self.trigger_preload(); 
-                        return first_sample;
-                    }
-                    Err(_) => {
-                        log::error!("I/O worker disconnected while preloading '{}'. Stopping stream.", self.file_path);
-                    }
-                }
-            }
-            // Let the stream die naturally if I/O worker panicked or channel dropped
-            None
-        }
-    }
-}
-
-impl Source for GaplessLoopingSource {
-    fn current_frame_len(&self) -> Option<usize> { self.current_decoder.current_frame_len() }
-    fn channels(&self) -> u16 { self.current_decoder.channels() }
-    fn sample_rate(&self) -> u32 { self.current_decoder.sample_rate() }
-    fn total_duration(&self) -> Option<Duration> { None } // Infinite loop
+    let decoder = Decoder::new(BufReader::new(file))?;
+    Ok(Box::new(decoder.convert_samples()))
 }
 
 pub struct AudioEngine {
@@ -165,7 +58,7 @@ pub struct AudioEngine {
     master_volume: f32,
     sound_volumes: HashMap<String, f32>,
     fade_duration: Duration,
-    io_worker_tx: Sender<PreloadTask>,
+    task_dispatcher: Sender<DecodeTask>,
 }
 
 impl AudioEngine {
@@ -212,18 +105,8 @@ impl AudioEngine {
             OutputStream::try_default().context("No audio output device available")?
         };
 
-        // Spawn a dedicated, long-lived worker for decoder initialization
-        // to keep audio threads free from blocking I/O calls.
-        let (task_tx, task_rx) = channel::<PreloadTask>();
-        thread::spawn(move || {
-            while let Ok(task) = task_rx.recv() {
-                if let Ok(decoder) = create_decoder_from_path(&task.file_path) {
-                    // Send back to the specific source instance.
-                    // Ignore errors if the sound was stopped by user in the meantime.
-                    let _ = task.reply_tx.send(decoder);
-                }
-            }
-        });
+        // init bufferd source worker pool
+        let task_dispatcher = buffered::init_worker_pool();
 
         log::info!("Audio engine initialized successfully using {}", host_name);
 
@@ -235,7 +118,7 @@ impl AudioEngine {
             master_volume: 1.0,
             sound_volumes: HashMap::new(),
             fade_duration: Duration::from_secs(2),
-            io_worker_tx: task_tx, // Store the dispatcher
+            task_dispatcher,
         })
     }
 
@@ -274,13 +157,12 @@ impl AudioEngine {
             fading.sink.stop();
         }
 
-        let initial_decoder = create_decoder_from_path(file_path)?;
-        let looping_source = GaplessLoopingSource::new(
-            file_path.to_string(),
-            initial_decoder,
-            self.io_worker_tx.clone() // Hand over a copy of the dispatcher
-        );
-        let final_source = looping_source.fade_in(self.fade_duration);
+        // Clone the string to move it into the factory closure safely.
+        let path_clone = file_path.to_string();
+        let base_source = buffered::spawn_stream(&self.task_dispatcher, move || {
+            create_decoder_from_path(&path_clone)
+        })?;
+        let final_source = base_source.fade_in(self.fade_duration);
 
         log::debug!("Creating sink for: {}", id);
 
