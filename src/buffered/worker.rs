@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rodio::Source;
-use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 
 use crate::buffered::source::BufferedSource;
@@ -15,8 +15,6 @@ pub fn init_worker_pool() -> Sender<DecodeTask> {
 
     for i in 0..WORKER_COUNT {
         let worker_rx = Arc::clone(&shared_rx);
-        let worker_tx = task_tx.clone();
-        
         thread::Builder::new()
             .name(format!("AudioWorker-{}", i))
             .spawn(move || {
@@ -26,7 +24,7 @@ pub fn init_worker_pool() -> Sender<DecodeTask> {
                         lock.recv()
                     };
                     match task_result {
-                        Ok(task) => task.process_chunk(&worker_tx),
+                        Ok(task) => task.process_chunk(),
                         Err(_) => break, 
                     }
                 }
@@ -51,16 +49,16 @@ where
 
     // Calculate chunk sizes based on actual file properties.
     // chunk_size = 1 second of audio.
-    let chunk_size = (sample_rate as usize) * (channels as usize);
+    let chunk_size = std::cmp::max((sample_rate as usize) * (channels as usize), 1024);
+
     // prime_chunk_size = 100 milliseconds of audio for instant startup.
     let prime_chunk_size = chunk_size / 10;
 
-    let (reply_tx, reply_rx) = sync_channel::<Vec<f32>>(PREFETCH_COUNT);
+    let (reply_tx, reply_rx) = channel::<Vec<f32>>();
     let (recycle_tx, recycle_rx) = channel::<Vec<f32>>();
+    let suspended_task = Arc::new(Mutex::new(None));
 
-    // Pre-allocate enough chunks to completely saturate the pipeline:
-    // PREFETCH_COUNT (in queue) + 1 (playing in frontend) + 1 (being decoded in worker)
-    for _ in 0..(PREFETCH_COUNT + 2) {
+    for _ in 0..PREFETCH_COUNT {
         recycle_tx.send(Vec::with_capacity(chunk_size)).unwrap();
     }
 
@@ -74,38 +72,96 @@ where
         reply_tx,
         recycle_rx,
         chunk_size, // Store the calculated size for background execution
+        suspended_task: Arc::downgrade(&suspended_task),
+        global_task_tx: dispatcher.clone(),
+        next_buffer: None,
     };
 
-    let _ = dispatcher.send(task);
+    dispatcher.send(task).unwrap();
 
-    Ok(BufferedSource::new(reply_rx, recycle_tx, channels, sample_rate))
+    Ok(BufferedSource::new(
+        reply_rx,
+        recycle_tx,
+        channels,
+        sample_rate,
+        suspended_task,
+        dispatcher.clone(),
+    ))
 }
 
 pub struct DecodeTask {
     pub decoder: Box<dyn Source<Item = f32> + Send>,
     pub factory: Box<dyn Fn() -> Result<Box<dyn Source<Item = f32> + Send>> + Send>,
-    pub reply_tx: SyncSender<Vec<f32>>,
+    pub reply_tx: Sender<Vec<f32>>,
     pub recycle_rx: Receiver<Vec<f32>>,
     pub chunk_size: usize,
+    pub suspended_task: Weak<Mutex<Option<DecodeTask>>>,
+    pub global_task_tx: Sender<DecodeTask>,
+    pub next_buffer: Option<Vec<f32>>,
 }
 
 impl DecodeTask {
-    pub fn process_chunk(mut self, task_tx: &Sender<DecodeTask>) {
-        let mut chunk = self.recycle_rx.try_recv().unwrap_or_else(|_| Vec::with_capacity(self.chunk_size));
+    pub fn process_chunk(mut self) {
+        let mut chunk = if let Some(buf) = self.next_buffer.take() {
+            buf
+        } else {
+            self.recycle_rx
+                .try_recv()
+                .expect("State machine violation: Task woke up but no buffer is available!")
+        };
         
         chunk.clear(); 
-        chunk.extend(self.decoder.by_ref().take(self.chunk_size));
+        
+        let decode_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            chunk.extend(self.decoder.by_ref().take(self.chunk_size));
+        }));
+
+        if decode_result.is_err() {
+            log::error!("Decoder panicked mid-stream. Terminating.");
+            return;
+        }
 
         if chunk.len() < self.chunk_size {
-            if let Ok(new_decoder) = (self.factory)() {
-                self.decoder = new_decoder;
-                let remaining = self.chunk_size - chunk.len();
-                chunk.extend(self.decoder.by_ref().take(remaining));
+            match (self.factory)() {
+                Ok(new_decoder) => {
+                    self.decoder = new_decoder;
+                    let remaining = self.chunk_size - chunk.len();
+                    let loop_decode = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        chunk.extend(self.decoder.by_ref().take(remaining));
+                    }));
+                    if loop_decode.is_err() {
+                        log::error!("Decoder panicked during gapless loop. Terminating.");
+                        return;
+                    }
+                }
+                Err(e) => {
+                    log::error!("Gapless loop factory failed: {}. Terminating stream.", e);
+                    if !chunk.is_empty() {
+                        let _ = self.reply_tx.send(chunk);
+                    }
+                    return;
+                }
             }
         }
 
-        if self.reply_tx.send(chunk).is_ok() {
-            let _ = task_tx.send(self);
+        if chunk.is_empty() { return; }
+        if self.reply_tx.send(chunk).is_err() {
+            return;
+        }
+
+        if let Some(suspended_arc) = self.suspended_task.upgrade() {
+            let mut suspended = suspended_arc.lock().unwrap();
+            match self.recycle_rx.try_recv() {
+                Ok(next_buf) => {
+                    self.next_buffer = Some(next_buf);
+                    drop(suspended);
+                    let _ = self.global_task_tx.clone().send(self);
+                }
+                Err(_) => {
+                    log::trace!("Task {:p} buffer full, suspending.", self.suspended_task.as_ptr());
+                    *suspended = Some(self);
+                }
+            }
         }
     }
 }

@@ -33,21 +33,48 @@ impl<R: std::io::Read + std::io::Seek> Source for MagnumOggWrapper<R> {
 }
 
 fn create_decoder_from_path(file_path: &str) -> Result<Box<dyn Source<Item = f32> + Send>> {
-    let file = File::open(file_path)
-        .context(format!("Failed to open sound file: {}", file_path))?;
+    log::debug!("Opening file: {}", file_path);
+    let file = File::open(file_path).context(format!("Failed to open sound file: {}", file_path))?;
+
+    log::debug!("Creating decoder for: {}", file_path);
+    let file_for_closure = file.try_clone().context("Failed to clone file handle")?;
 
     let is_opus = file_path.to_lowercase().ends_with(".opus")
         || file_path.to_lowercase().ends_with(".webm");
 
     if is_opus {
-        let file_for_opus = file.try_clone().context("Failed to clone file handle for Opus")?;
-        if let Ok(decoder) = OpusSourceOgg::new(BufReader::new(file_for_opus)) {
-            return Ok(Box::new(MagnumOggWrapper(decoder)));
+        log::info!("Attempting to use Magnum (Opus) decoder for: {}", file_path);
+        match OpusSourceOgg::new(BufReader::new(file_for_closure)) {
+            Ok(decoder) => {
+                log::info!("Magnum decoder created successfully.");
+                return Ok(Box::new(MagnumOggWrapper(decoder)));
+            }
+            Err(e) => {
+                log::error!("Magnum decoder failed: {:?}. Falling back to Rodio.", e);
+            }
         }
     }
 
-    let decoder = Decoder::new(BufReader::new(file))?;
-    Ok(Box::new(decoder.convert_samples()))
+    let file_fallback = file.try_clone().context("Failed to clone file for fallback")?;
+
+    // Catch panics from Rodio to prevent malformed audio files from crashing the app
+    let decoder_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        Decoder::new(BufReader::new(file_fallback))
+    }));
+
+    match decoder_result {
+        Ok(result) => match result {
+            Ok(d) => Ok(Box::new(d.convert_samples())),
+            Err(e) => {
+                log::error!("Failed to create decoder for '{}': {}", file_path, e);
+                Err(anyhow::anyhow!("Decoder error: {}", e))
+            }
+        },
+        Err(_) => {
+            log::error!("Decoder PANICKED for '{}'.", file_path);
+            Err(anyhow::anyhow!("Decoder panicked."))
+        }
+    }
 }
 
 pub struct AudioEngine {
