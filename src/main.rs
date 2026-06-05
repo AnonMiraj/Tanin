@@ -5,6 +5,7 @@ mod presets;
 mod session;
 mod static_data;
 mod ui;
+mod buffered;
 
 use anyhow::Result;
 use app::{App, CurrentView};

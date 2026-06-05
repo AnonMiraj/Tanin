@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::time::Duration;
+use std::sync::mpsc::Sender;
+use crate::buffered::{self, DecodeTask};
 
 struct FadingSink {
     id: String,
@@ -17,29 +19,61 @@ struct FadingSink {
 }
 
 struct MagnumOggWrapper<R: std::io::Read + std::io::Seek>(OpusSourceOgg<R>);
-
 impl<R: std::io::Read + std::io::Seek> Iterator for MagnumOggWrapper<R> {
     type Item = f32;
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next()
     }
 }
-
 impl<R: std::io::Read + std::io::Seek> Source for MagnumOggWrapper<R> {
-    fn current_frame_len(&self) -> Option<usize> {
-        None
+    fn current_frame_len(&self) -> Option<usize> { None }
+    fn channels(&self) -> u16 { 2 }
+    fn sample_rate(&self) -> u32 { 48000 }
+    fn total_duration(&self) -> Option<Duration> { None }
+}
+
+fn create_decoder_from_path(file_path: &str) -> Result<Box<dyn Source<Item = f32> + Send>> {
+    log::debug!("Opening file: {}", file_path);
+    let file = File::open(file_path).context(format!("Failed to open sound file: {}", file_path))?;
+
+    log::debug!("Creating decoder for: {}", file_path);
+    let file_for_closure = file.try_clone().context("Failed to clone file handle")?;
+
+    let is_opus = file_path.to_lowercase().ends_with(".opus")
+        || file_path.to_lowercase().ends_with(".webm");
+
+    if is_opus {
+        log::info!("Attempting to use Magnum (Opus) decoder for: {}", file_path);
+        match OpusSourceOgg::new(BufReader::new(file_for_closure)) {
+            Ok(decoder) => {
+                log::info!("Magnum decoder created successfully.");
+                return Ok(Box::new(MagnumOggWrapper(decoder)));
+            }
+            Err(e) => {
+                log::error!("Magnum decoder failed: {:?}. Falling back to Rodio.", e);
+            }
+        }
     }
 
-    fn channels(&self) -> u16 {
-        2
-    }
+    let file_fallback = file.try_clone().context("Failed to clone file for fallback")?;
 
-    fn sample_rate(&self) -> u32 {
-        48000
-    }
+    // Catch panics from Rodio to prevent malformed audio files from crashing the app
+    let decoder_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        Decoder::new(BufReader::new(file_fallback))
+    }));
 
-    fn total_duration(&self) -> Option<Duration> {
-        None
+    match decoder_result {
+        Ok(result) => match result {
+            Ok(d) => Ok(Box::new(d.convert_samples())),
+            Err(e) => {
+                log::error!("Failed to create decoder for '{}': {}", file_path, e);
+                Err(anyhow::anyhow!("Decoder error: {}", e))
+            }
+        },
+        Err(_) => {
+            log::error!("Decoder PANICKED for '{}'.", file_path);
+            Err(anyhow::anyhow!("Decoder panicked."))
+        }
     }
 }
 
@@ -51,6 +85,7 @@ pub struct AudioEngine {
     master_volume: f32,
     sound_volumes: HashMap<String, f32>,
     fade_duration: Duration,
+    task_dispatcher: Sender<DecodeTask>,
 }
 
 impl AudioEngine {
@@ -61,18 +96,17 @@ impl AudioEngine {
         let mut device = None;
         let mut host_name = "Default";
 
-        let mut priority_hosts = Vec::new();
-
-        #[cfg(all(
-            any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd"),
-            feature = "jack"
-        ))]
-        priority_hosts.push(HostId::Jack);
+        #[allow(unused_mut)]
+        let mut priority_hosts: Vec<(HostId, &'static str)> = Vec::new();
 
         #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd"))]
-        priority_hosts.push(HostId::Alsa);
+        {
+            #[cfg(feature = "jack")]
+            priority_hosts.push((HostId::Jack, "JACK"));
+            priority_hosts.push((HostId::Alsa, "ALSA"));
+        }
 
-        for &host_id in &priority_hosts {
+        for &(host_id, name_str) in &priority_hosts {
             if available_hosts.contains(&host_id) {
                 log::debug!("Attempting to use audio host: {:?}", host_id);
                 if let Ok(host) = cpal::host_from_id(host_id) {
@@ -83,26 +117,7 @@ impl AudioEngine {
                             d.name().unwrap_or_else(|_| "Unknown".to_string())
                         );
                         device = Some(d);
-                        host_name = match host_id {
-                            #[cfg(all(
-                                any(
-                                    target_os = "linux",
-                                    target_os = "dragonfly",
-                                    target_os = "freebsd"
-                                ),
-                                feature = "jack"
-                            ))]
-                            HostId::Jack => "JACK",
-                            #[cfg(any(
-                                target_os = "linux",
-                                target_os = "dragonfly",
-                                target_os = "freebsd"
-                            ))]
-                            HostId::Alsa => "ALSA",
-                            #[allow(unreachable_patterns)]
-                            _ => "Unknown",
-                        };
-
+                        host_name = name_str;
                         break;
                     }
                 }
@@ -117,6 +132,9 @@ impl AudioEngine {
             OutputStream::try_default().context("No audio output device available")?
         };
 
+        // init bufferd source worker pool
+        let task_dispatcher = buffered::init_worker_pool();
+
         log::info!("Audio engine initialized successfully using {}", host_name);
 
         Ok(Self {
@@ -127,6 +145,7 @@ impl AudioEngine {
             master_volume: 1.0,
             sound_volumes: HashMap::new(),
             fade_duration: Duration::from_secs(2),
+            task_dispatcher,
         })
     }
 
@@ -165,67 +184,17 @@ impl AudioEngine {
             fading.sink.stop();
         }
 
-        log::debug!("Opening file: {}", file_path);
-        let file =
-            File::open(file_path).context(format!("Failed to open sound file: {}", file_path))?;
-
-        log::debug!("Creating decoder for: {}", file_path);
-
-        let file_for_closure = file.try_clone().context("Failed to clone file handle")?;
-
-        let is_opus = file_path.to_lowercase().ends_with(".opus")
-            || file_path.to_lowercase().ends_with(".webm");
-
-        let source: Box<dyn Source<Item = f32> + Send> = if is_opus {
-            log::info!("Attempting to use Magnum (Opus) decoder for: {}", file_path);
-            match OpusSourceOgg::new(BufReader::new(file_for_closure)) {
-                Ok(decoder) => {
-                    log::info!("Magnum decoder created successfully.");
-                    Box::new(MagnumOggWrapper(decoder))
-                }
-                Err(e) => {
-                    log::error!("Magnum decoder failed: {:?}. Falling back to Rodio.", e);
-                    let file_fallback = file
-                        .try_clone()
-                        .context("Failed to clone file for fallback")?;
-                    let decoder_result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                            Decoder::new(BufReader::new(file_fallback))
-                        }));
-                    match decoder_result {
-                        Ok(Ok(d)) => Box::new(d.convert_samples()),
-                        Ok(Err(e)) => return Err(anyhow::anyhow!("Rodio decoder error: {}", e)),
-                        Err(_) => return Err(anyhow::anyhow!("Rodio decoder panicked.")),
-                    }
-                }
-            }
-        } else {
-            let decoder_result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                    Decoder::new(BufReader::new(file_for_closure))
-                }));
-
-            match decoder_result {
-                Ok(result) => match result {
-                    Ok(d) => Box::new(d.convert_samples()),
-                    Err(e) => {
-                        log::error!("Failed to create decoder for '{}': {}", file_path, e);
-                        return Err(anyhow::anyhow!("Decoder error: {}", e));
-                    }
-                },
-                Err(_) => {
-                    log::error!("Decoder PANICKED for '{}'.", file_path);
-                    return Err(anyhow::anyhow!("Decoder panicked."));
-                }
-            }
-        };
-
-        let source = source.repeat_infinite().fade_in(self.fade_duration);
+        // Clone the string to move it into the factory closure safely.
+        let path_clone = file_path.to_string();
+        let base_source = buffered::spawn_stream(&self.task_dispatcher, move || {
+            create_decoder_from_path(&path_clone)
+        })?;
+        let final_source = base_source.fade_in(self.fade_duration);
 
         log::debug!("Creating sink for: {}", id);
 
         let sink = Sink::try_new(&self.stream_handle)?;
-        sink.append(source);
+        sink.append(final_source);
 
         self.sound_volumes.insert(id.to_string(), volume);
         let effective_vol = volume * self.master_volume;
