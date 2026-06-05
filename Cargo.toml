@@ -32,3 +32,9 @@ minreq = { version = "2.11", default-features = false, features = [
 cpal = "0.15.3"
 # libc = "0.2.182"
 nix = { version = "0.31.2", default-features = false, features = ["fs"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
