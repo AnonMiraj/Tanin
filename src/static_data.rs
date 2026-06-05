@@ -185,7 +185,7 @@ pub fn load_sounds_from_file<P: AsRef<Path>>(path: P) -> Result<Vec<Sound>> {
                 };
 
                 sounds.push(Sound {
-                    id: sound_id.clone(),
+                    id: sound_id.to_lowercase().replace(" ", "_"),
                     name,
                     category: category_name.clone(),
                     file_path,
