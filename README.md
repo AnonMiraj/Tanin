@@ -21,27 +21,102 @@ https://github.com/user-attachments/assets/2cbfa09f-52fd-4816-939c-ed92435fa605
 
 ### From Package Managers
 
-**Cargo:**
+**Cargo** (compiles from source):
+
 ```bash
 cargo install tanin
 ```
 
-**Arch Linux (AUR):**
+**cargo-binstall** (downloads a prebuilt binary):
+
 ```bash
-yay -S tanin
-# or using paru
-paru -S tanin
+cargo binstall tanin
 ```
 
-### Build from Source
+**Arch Linux (AUR):**
+
+```bash
+yay -S tanin-bin   # prebuilt binary
+yay -S tanin-git   # latest git revision
+```
+
+### Prebuilt Binaries
+
+Every release publishes an archive for each supported target on the
+[releases page](https://github.com/AnonMiraj/Tanin/releases/latest):
+
+| Platform | Target |
+| --- | --- |
+| Linux x86_64 | `x86_64-unknown-linux-gnu` |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` |
+| macOS Intel | `x86_64-apple-darwin` |
+| macOS Apple Silicon | `aarch64-apple-darwin` |
+
+```bash
+VERSION=0.1.1
+curl -LO "https://github.com/AnonMiraj/Tanin/releases/download/v${VERSION}/tanin-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+tar -xzf "tanin-v${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+sudo install -Dm755 tanin /usr/local/bin/tanin
+```
+
+The Linux archives are built against glibc 2.39 (Ubuntu 24.04). On an older
+distribution, build from source instead.
+
+### Nix / NixOS
+
+The flake exposes two packages: `tanin` compiles from source and `tanin-bin`
+unpacks the prebuilt release archive.
+
+```bash
+nix run github:AnonMiraj/Tanin#tanin-bin
+```
+
+```nix
+# flake.nix
+inputs.tanin.url = "github:AnonMiraj/Tanin";
+
+# configuration.nix
+environment.systemPackages = [
+  inputs.tanin.packages.${pkgs.stdenv.hostPlatform.system}.tanin-bin
+  # or: inputs.tanin.packages.${pkgs.stdenv.hostPlatform.system}.tanin
+];
+```
+
+<details>
+<summary>Manual installation (build from source)</summary>
+
+Requires a Rust toolchain plus the system libraries below.
+
+| Distribution | Command |
+| --- | --- |
+| Debian / Ubuntu | `sudo apt install pkg-config libasound2-dev libjack-jackd2-dev libssl-dev libopus-dev` |
+| Arch Linux | `sudo pacman -S --needed pkgconf alsa-lib jack2 openssl opus` |
+| Fedora | `sudo dnf install pkgconf-pkg-config alsa-lib-devel jack-audio-connection-kit-devel openssl-devel opus-devel` |
+| macOS | `brew install pkg-config opus jack` |
+
 ```bash
 git clone https://github.com/AnonMiraj/Tanin.git
 cd Tanin
-cargo run --release
+cargo build --release
+sudo install -Dm755 target/release/tanin /usr/local/bin/tanin
 ```
 
-### Requirements
-*   **Optional**: [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) (for downloading custom sounds)
+Running `cargo run --release` from the repository root picks up the bundled
+sounds in `assets/` directly, with nothing to download. After a system-wide
+install, copy them to the path the binary looks for:
+
+```bash
+sudo install -d /usr/share/tanin/assets
+sudo cp -r assets/sounds.toml assets/sounds /usr/share/tanin/assets/
+```
+
+Otherwise Tanin downloads them into your data directory
+(`~/.local/share/tanin/`) on first launch.
+
+**Optional**: [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) for downloading custom
+sounds from YouTube and other sites.
+
+</details>
 
 ## Configuration & Custom Sounds
 
