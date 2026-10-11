@@ -33,8 +33,14 @@ cpal = "0.15.3"
 # libc = "0.2.182"
 nix = { version = "0.31.2", default-features = false, features = ["fs"] }
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.tar.gz"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
 [profile.release]
 codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
