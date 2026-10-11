@@ -1,6 +1,6 @@
 [package]
 name = "tanin"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["AnonMiraj"]
 edition = "2021"
 description = "A TUI ambient sound generator written in Rust."
