@@ -44,14 +44,27 @@ jobs:
             asset_extension: .tar.gz
 
           # --- macOS Intel (x86_64) ---
-          # NOTE: macos-13 is GitHub's native x86_64 runner, ensuring native compilation
-          # without cross-compilation linking issues against Homebrew C libraries.
-          - os: macos-13
+          # NOTE: macos-13 was retired in December 2025. macos-15-intel is
+          # GitHub's supported native x86_64 runner (through August 2027), so
+          # Homebrew C libraries link natively without cross-compilation.
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             asset_extension: .tar.gz
 
     steps:
       - uses: actions/checkout@v7
+
+      # binstall derives its download URL from the Cargo.toml version while the
+      # asset name is derived from the tag. A mismatch produces silent 404s.
+      - name: Verify tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          manifest_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          if [ "${GITHUB_REF_NAME#v}" != "$manifest_version" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${manifest_version}"
+            exit 1
+          fi
+          echo "Tag ${GITHUB_REF_NAME} matches Cargo.toml version ${manifest_version}"
 
       # --- SYSTEM DEPENDENCIES ---
       # Linux requires:
@@ -117,6 +130,15 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: ${{ env.ASSET_PATH }}
+
+      # Dry run (workflow_dispatch / branch push): keep the tarballs instead of
+      # publishing a release, so the matrix can be validated before tagging.
+      - name: Upload Artifact (dry run)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.BINARY_NAME }}-${{ matrix.target }}
+          path: ${{ env.ASSET_PATH }}
 
   # JOB 2: Publish to Crates.io
   publish-crate:
