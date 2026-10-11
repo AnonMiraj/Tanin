@@ -21,26 +21,73 @@ https://github.com/user-attachments/assets/2cbfa09f-52fd-4816-939c-ed92435fa605
 
 ### From Package Managers
 
-**Cargo:**
 ```bash
-cargo install tanin
+cargo install tanin    # compiles from source
+cargo binstall tanin   # downloads a prebuilt binary
 ```
 
 **Arch Linux (AUR):**
+
 ```bash
-yay -S tanin
-# or using paru
-paru -S tanin
+yay -S tanin-bin   # prebuilt binary
+yay -S tanin-git   # latest git revision
 ```
 
-### Build from Source
+### Nix / NixOS
+
+The flake exposes two packages: `tanin` compiles from source and `tanin-bin`
+unpacks the prebuilt release archive.
+
+```bash
+nix run github:AnonMiraj/Tanin#tanin-bin
+```
+
+```nix
+# flake.nix
+inputs.tanin.url = "github:AnonMiraj/Tanin";
+
+# configuration.nix
+environment.systemPackages = [
+  inputs.tanin.packages.${pkgs.stdenv.hostPlatform.system}.tanin-bin
+  # or: inputs.tanin.packages.${pkgs.stdenv.hostPlatform.system}.tanin
+];
+```
+
+<details>
+<summary>Manual installation (build from source)</summary>
+
+Requires a Rust toolchain plus the system libraries below.
+
+| Distribution | Command |
+| --- | --- |
+| Debian / Ubuntu | `sudo apt install pkg-config libasound2-dev libjack-jackd2-dev libssl-dev libopus-dev` |
+| Arch Linux | `sudo pacman -S --needed pkgconf alsa-lib jack2 openssl opus` |
+| Fedora | `sudo dnf install pkgconf-pkg-config alsa-lib-devel jack-audio-connection-kit-devel openssl-devel opus-devel` |
+| macOS | `brew install pkg-config opus jack` |
+
 ```bash
 git clone https://github.com/AnonMiraj/Tanin.git
 cd Tanin
-cargo run --release
+cargo build --release
+sudo install -Dm755 target/release/tanin /usr/local/bin/tanin
 ```
 
+Running `cargo run --release` from the repository root picks up the bundled
+sounds in `assets/` directly, with nothing to download. After a system-wide
+install, copy them to the path the binary looks for:
+
+```bash
+sudo install -d /usr/share/tanin/assets
+sudo cp -r assets/sounds.toml assets/sounds /usr/share/tanin/assets/
+```
+
+Otherwise Tanin downloads them into your data directory
+(`~/.local/share/tanin/`) on first launch.
+
+</details>
+
 ### Requirements
+
 *   **Optional**: [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) (for downloading custom sounds)
 
 ## Configuration & Custom Sounds
