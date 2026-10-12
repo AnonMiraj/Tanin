@@ -24,8 +24,8 @@
       };
 
       hashes = {
-        x86_64-linux = "3f135a717605596635a579f6b8975d777ab9e86a80dff3ada299d2511b442068";
-        aarch64-linux = "4a295caca064716929482add99947cf1c8c52ac11f46ca44b8651764caa8a84e";
+        x86_64-linux = "f0409dc98fd8d82c63a768cbf48a5b7dee8ffc2bb970729e677a7eaceb81b0bb";
+        aarch64-linux = "50bbc2c08d68cb65db183ed64ea571cc4a0486114c4ee3e8a564722012fd4582";
       };
 
       audioLibs = pkgs: with pkgs; [
