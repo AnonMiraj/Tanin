@@ -35,6 +35,10 @@
         libopus
       ];
 
+      jackWrapper = pkgs: ''
+        wrapProgram $out/bin/tanin --prefix LD_LIBRARY_PATH : "${lib.makeLibraryPath [ pkgs.jack2 ]}"
+      '';
+
       meta = {
         description = "A TUI ambient sound generator written in Rust";
         homepage = "https://github.com/AnonMiraj/Tanin";
@@ -51,8 +55,10 @@
         nativeBuildInputs = [
           pkgs.pkg-config
           pkgs.autoPatchelfHook
+          pkgs.makeWrapper
         ];
         buildInputs = audioLibs pkgs ++ [ pkgs.stdenv.cc.cc.lib ];
+        postInstall = jackWrapper pkgs;
       };
 
       # Option 2: unpack the prebuilt release asset, no compilation.
@@ -69,7 +75,10 @@
             sha256 = hashes.${system};
           };
           sourceRoot = "."; # the tarball has no top-level directory
-          nativeBuildInputs = [ pkgs.autoPatchelfHook ];
+          nativeBuildInputs = [
+            pkgs.autoPatchelfHook
+            pkgs.makeWrapper
+          ];
           buildInputs = audioLibs pkgs ++ [ pkgs.stdenv.cc.cc.lib ];
           dontConfigure = true;
           dontBuild = true;
@@ -77,6 +86,7 @@
             install -Dm755 tanin $out/bin/tanin
             install -Dm644 LICENSE $out/share/licenses/tanin/LICENSE
           '';
+          postFixup = jackWrapper pkgs;
         };
 
       packagesFor =

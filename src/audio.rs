@@ -2,12 +2,14 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::HostId;
 use magnum::container::ogg::OpusSourceOgg;
+use nix::unistd::{dup, dup2_stdout};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
-use std::time::Duration;
+use std::os::fd::OwnedFd;
 use std::sync::mpsc::Sender;
+use std::time::Duration;
 use crate::buffered::{self, DecodeTask};
 
 struct FadingSink {
@@ -88,6 +90,26 @@ pub struct AudioEngine {
     task_dispatcher: Sender<DecodeTask>,
 }
 
+struct MutedStdout(Option<OwnedFd>);
+
+impl MutedStdout {
+    fn new() -> Self {
+        let (Ok(saved), Ok(dev_null)) = (dup(std::io::stdout()), File::open("/dev/null")) else {
+            return Self(None);
+        };
+
+        Self(dup2_stdout(dev_null).ok().map(|()| saved))
+    }
+}
+
+impl Drop for MutedStdout {
+    fn drop(&mut self) {
+        if let Some(saved) = self.0.take() {
+            let _ = dup2_stdout(saved);
+        }
+    }
+}
+
 impl AudioEngine {
     pub fn new() -> Result<Self> {
         let available_hosts = cpal::available_hosts();
@@ -105,6 +127,8 @@ impl AudioEngine {
             priority_hosts.push((HostId::Jack, "JACK"));
             priority_hosts.push((HostId::Alsa, "ALSA"));
         }
+
+        let _muted_stdout = MutedStdout::new();
 
         for &(host_id, name_str) in &priority_hosts {
             if available_hosts.contains(&host_id) {
